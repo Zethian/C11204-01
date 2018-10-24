@@ -21,30 +21,58 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 
 /* Variables used over several functions defined as global */
 
 uint8_t chkstr[2];
-uint8_t send[32];
+uint8_t send[40];
 uint16_t rec=0;
 
+clock_t start_t, end_t, total_t;
 int cntr=0;
 
 /* Prototype declaration */
 void processData(uint8_t data[]);
-void getarray(uint8_t *array, uint8_t cmd[24]);
+void getarray(uint8_t *array, uint8_t cmd[28]);
 
 /* Define GPIO0 as UART_TX and UART_RX */
 mss_uart_instance_t * const gp_my_uart = &g_mss_uart0;
 mss_uart_instance_t * const gp_my_uart1 = &g_mss_uart1;
 
+/* Checks for received voltage level, rejects if higher than 55V */
+int voltageCheck(uint8_t cmd[28]){
+	uint8_t data[4] = "";
+	uint32_t val = 0;
+	if((cmd[0]=='H' && cmd[1]=='S' && cmd[2]=='T')) {
+		for(int i=0; i<4; i++){
+			data[i] = cmd[i+19];
+		}
+	}
+	else if(cmd[0]=='H' && cmd[1]=='B' && cmd[2]=='V'){
+		for(int i=0; i<4; i++){
+			data[i] = cmd[i+3];
+		}
+	}
+	val=strtol(data, NULL, 16);
+	val=round(val*(1.812/pow(10, 3)));
+	if(val > 55)
+		return -1;
+	else
+		return 0;
+}
+
  /* UART handler for RX from HVPS */
 void uart1_rx_handler(mss_uart_instance_t * this_uart){
-	uint8_t rx_buff[16];
+	uint8_t rx_buff[16]="";
 	uint32_t rx_size;
+	uint8_t output[18]="";
 	rx_size = MSS_UART_get_rx(this_uart, rx_buff, sizeof(rx_buff)); /* Get message from HVPS and send it on to computer terminal */
-	MSS_UART_polled_tx_string(gp_my_uart, rx_buff);
-	processData(rx_buff); /* Process data for certain commands */
+	end_t = clock();
+	total_t = (int) ((end_t - start_t) / CLOCKS_PER_SEC); /* Adds timestamp from start of program to output to terminal */
+	sprintf(output, "%i: %s", total_t, rx_buff);
+	MSS_UART_polled_tx_string(gp_my_uart, output);
+	//processData(rx_buff); /* Process data for certain commands */
 	memset(rx_buff, 0, sizeof(rx_buff)); /* Clear buffer */
 }
 
@@ -55,6 +83,10 @@ void uart0_rx_handler(mss_uart_instance_t * this_uart){
 	uint32_t rx_size;
 	/* Get commands from terminal on connected computer, format them and send them on to HVPS */
 	rx_size = MSS_UART_get_rx(this_uart, rx_buff, sizeof(rx_buff));
+	if(voltageCheck(rx_buff) == -1){
+		MSS_UART_polled_tx_string(gp_my_uart, "Voltage setting too high");
+		return;
+	}
 	getarray(send, rx_buff);
 	MSS_UART_polled_tx_string(gp_my_uart1, send);
 	/* Clear buffers */
@@ -65,11 +97,12 @@ void uart0_rx_handler(mss_uart_instance_t * this_uart){
 /*
  * Gets the combined array from all the parts of the message by adding start and stop bits, delimiter and calculating the checksum
  */
-void getarray(uint8_t *array, uint8_t cmd[24]){
+void getarray(uint8_t *array, uint8_t cmd[28]){
 	const uint8_t stx = 0x02;
 	const uint8_t etx = 0x03;
 	const uint8_t CR = 0x0D;
 	uint8_t chksm=0x00;
+	/* Memmove is used with offset for the adress because strcat did not give the proper format when sending it on to the HVPS */
 	memmove(array, &stx, 1);
 	memmove(array+1, cmd, strlen(cmd));
 	memmove(array+1+strlen(cmd), &etx, 1);
@@ -80,6 +113,7 @@ void getarray(uint8_t *array, uint8_t cmd[24]){
 	sprintf(chkstr, "%X", chksm);
 	memmove(array+2+strlen(cmd), chkstr, 2);
 	memmove(array+4+strlen(cmd), &CR, 1);
+	strcpy(cmd, "");
 
 }
 
@@ -127,6 +161,7 @@ void Timer1_IRQHandler(){
 		getarray(send, command);
 		MSS_UART_polled_tx_string(gp_my_uart1, send);
 		strcpy(send, "");
+		cntr=0;
 	}
 	if(cntr%3==1){
 		/* Command for getting current output */
@@ -152,12 +187,13 @@ void Timer1_IRQHandler(){
  */
 void startHVPS(void){
 	char temp[50] = "";
-	strcpy(temp, "HST03E803E80000000093E700C8");
+	strcpy(temp, "HST03E803E8000000006BC900C8");
 	getarray(send, temp); /*get required string from function */
 	MSS_UART_polled_tx_string(gp_my_uart1, send);
 	while(rec==0){ /* wait for HVPS to confirm started */
 		break;
 	}
+	strcpy(send, "");
 }
 
 int main(void){
@@ -165,19 +201,21 @@ int main(void){
 	/* Turn off watchdog */
 	SYSREG->WDOG_CR=0;
 
+	/* Initialize and start clock for timekeeping */
+	start_t = clock();
 	/*
 	 * Initialize and configure UART and timer
 	 * Timer: periodic mode, loads value in load_immediate
 	 * UART: 38400 BAUD, 8 bits, 1 stop bit, even parity
 	 */
 	MSS_TIM1_init(MSS_TIMER_PERIODIC_MODE);
-	MSS_TIM1_load_immediate(0xF000FFFF);
+	MSS_TIM1_load_immediate(0x0FFFFFFF);
 	MSS_UART_init(gp_my_uart1, MSS_UART_38400_BAUD, MSS_UART_DATA_8_BITS | MSS_UART_EVEN_PARITY | MSS_UART_ONE_STOP_BIT);
 	MSS_UART_init(gp_my_uart, MSS_UART_38400_BAUD, MSS_UART_DATA_8_BITS | MSS_UART_EVEN_PARITY | MSS_UART_ONE_STOP_BIT);
 	MSS_UART_set_rx_handler(gp_my_uart1, uart1_rx_handler, MSS_UART_FIFO_FOURTEEN_BYTES);
 	MSS_UART_set_rx_handler(gp_my_uart, uart0_rx_handler, MSS_UART_FIFO_EIGHT_BYTES);
 	MSS_TIM1_enable_irq();
-	startHVPS();
+	//startHVPS();
 
 
 	MSS_TIM1_start();
