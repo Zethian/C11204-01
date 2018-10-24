@@ -29,7 +29,6 @@ uint8_t chkstr[2];
 uint8_t send[40];
 uint16_t rec=0;
 
-clock_t start_t, end_t, total_t;
 int cntr=0;
 
 /* Prototype declaration */
@@ -68,8 +67,6 @@ void uart1_rx_handler(mss_uart_instance_t * this_uart){
 	uint32_t rx_size;
 	uint8_t output[18]="";
 	rx_size = MSS_UART_get_rx(this_uart, rx_buff, sizeof(rx_buff)); /* Get message from HVPS and send it on to computer terminal */
-	end_t = clock();
-	total_t = (int) ((end_t - start_t) / CLOCKS_PER_SEC); /* Adds timestamp from start of program to output to terminal */
 	sprintf(output, "%i: %s", total_t, rx_buff);
 	MSS_UART_polled_tx_string(gp_my_uart, output);
 	//processData(rx_buff); /* Process data for certain commands */
@@ -201,8 +198,6 @@ int main(void){
 	/* Turn off watchdog */
 	SYSREG->WDOG_CR=0;
 
-	/* Initialize and start clock for timekeeping */
-	start_t = clock();
 	/*
 	 * Initialize and configure UART and timer
 	 * Timer: periodic mode, loads value in load_immediate
